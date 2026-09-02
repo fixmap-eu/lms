@@ -4,7 +4,7 @@
  * WeKrwiITLDAPAuthPass — LMS Plugin (new-style, metadata + admin hooks)
  *
  * Actual userpanel authentication is handled by the companion old-style plugin:
- *   lib/plugins/WeKrwiITLDAPAuthPass.php
+ *   lib/plugins/WeKrwiITLDAPAuthPassUP.php
  *
  * That file fires inline before Session is constructed in userpanel/index.php,
  * performs LDAP bind against Synology/AD, creates the up_sessions row directly
@@ -15,7 +15,12 @@
  *
  * Activation (lms.ini):
  *   [phpui]
- *   plugins = ... WeKrwiITLDAPAuthPass
+ *   plugins = ... WeKrwiITLDAPAuthPass WeKrwiITLDAPAuthPassUP
+ *
+ *   Both names are required — this file only wires up operator (admin-panel)
+ *   sign-in. Listing just "WeKrwiITLDAPAuthPass" leaves the userpanel companion
+ *   above inactive, silently (audit 2026-09-02, 3 models: docs previously
+ *   pointed here and omitted the second name).
  *
  * Configuration (lms.ini):
  *   [WeKrwiITLDAPAuthPass]
@@ -26,11 +31,10 @@
  *   ldap_mail_attr   = mail
  *   tls_require_cert = demand       ; never | allow | demand (default: demand, fail-closed)
  *   ; allowed_status =              ; comma-sep ints; empty = all statuses
- *   ; require_group   =             ; AD security group DN (recursive). REQUIRED for
- *                                   ; operator (admin-panel) LDAP sign-in — without it
- *                                   ; the password_verification handler never shortcuts
- *                                   ; auth, since name equality alone does not prove an
- *                                   ; AD account should hold LMS operator privileges.
+ *   ; require_group   =             ; OPTIONAL AD security group DN (recursive). When
+ *                                   ; unset, a matching AD login + password is enough
+ *                                   ; to sign in as the LMS operator of that login. Set
+ *                                   ; this to also require membership in the given group.
  *
  * (C) 2026 Przemysław 'djrzulf' Knycz / WeKrwi.IT
  */
@@ -40,7 +44,7 @@ class WeKrwiITLDAPAuthPass extends LMSPlugin
     const PLUGIN_NAME        = 'WeKrwi.IT-LDAPAuthPass';
     const PLUGIN_DESCRIPTION = 'LDAP/AD pass-through authentication for LMS operators and userpanel customers';
     const PLUGIN_AUTHOR      = "Przemysław 'djrzulf' Knycz &lt;przemyslaw@wekrwi.it&gt;";
-    const PLUGIN_SOFTWARE_VERSION = '1.0.0';
+    const PLUGIN_SOFTWARE_VERSION = '1.0.1';
 
     public function registerHandlers()
     {

@@ -66,7 +66,13 @@
  *
  * Activation (lms.ini):
  *   [phpui]
- *   plugins = ... WeKrwiITLDAPAuthPass
+ *   plugins = ... WeKrwiITLDAPAuthPass WeKrwiITLDAPAuthPassUP
+ *
+ *   Both names are required — they are two separate plugins (new-style admin
+ *   handler + this old-style userpanel script) and LMSPluginManager loads each
+ *   independently by its own basename. Listing only "WeKrwiITLDAPAuthPass"
+ *   enables the admin-panel LDAP handler but leaves this userpanel file
+ *   inactive with no error or log line (audit 2026-09-02, 3 models).
  */
 
 // ── Guard: userpanel context only ────────────────────────────────────────────
@@ -151,6 +157,8 @@ if (function_exists('apcu_fetch')) {
         );
         return;
     }
+} else {
+    writesyslog('WeKrwiITLDAPAuthPass: APCu unavailable — bind throttle disabled', LOG_WARNING);
 }
 
 // ── Connect ───────────────────────────────────────────────────────────────────

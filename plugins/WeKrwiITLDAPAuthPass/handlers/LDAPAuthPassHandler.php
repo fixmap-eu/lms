@@ -116,6 +116,12 @@ class LDAPAuthPassHandler
                 );
                 return $hook_data;
             }
+        } else {
+            // Fails open by design (AD's own lockout is the backstop, see class
+            // docblock) — but that used to be silent. Without APCu this bind
+            // attempt is completely unthrottled; say so once per request instead
+            // of leaving the missing protection undetectable in the logs.
+            writesyslog('WeKrwiITLDAPAuthPass: APCu unavailable — bind throttle disabled', LOG_WARNING);
         }
 
         $conn = @ldap_connect(rtrim($host, '/') . ':' . $port);
@@ -133,37 +139,44 @@ class LDAPAuthPassHandler
         $bound   = @ldap_bind($conn, $bind_dn, $passwd);
 
         if ($bound) {
-            // WYS-1 (2026-08-06 audit): a bare successful bind only proves the
-            // caller owns SOME AD account whose UPN/sAMAccountName matches this
-            // LMS operator's login — it does not prove that account is meant to
-            // be an LMS operator at all. The same AD tree also authenticates
-            // userpanel customers (see WeKrwiITLDAPAuthPassUP.php), so any
-            // customer account named e.g. "admin" or "biuro" would otherwise
-            // log in with full operator privileges. require_group closes this
-            // by demanding membership (recursive, via the AD 1.4.1941 matching
-            // rule so nested groups count) in an explicitly configured DN
-            // before the bind is trusted. Fail-closed: unset require_group
-            // means the handler never shortcuts auth, not that it trusts blindly.
+            // require_group is OPTIONAL, by product decision (2026-09-02): a bare
+            // successful bind only proves the caller owns SOME AD account whose
+            // UPN/sAMAccountName matches this LMS operator's login, not that the
+            // account is meant to hold operator privileges — the same AD tree
+            // also authenticates userpanel customers (see WeKrwiITLDAPAuthPassUP.php).
+            // Operators deploying this plugin accept that a matching AD login is
+            // sufficient (identical to pre-1.0 behavior); require_group remains
+            // available for installations that want the extra membership check,
+            // but its absence is no longer treated as misconfiguration.
             $base_dn        = ConfigHelper::getConfig('WeKrwiITLDAPAuthPass.base_dn', '');
             $require_group  = ConfigHelper::getConfig('WeKrwiITLDAPAuthPass.require_group', '');
-            $scoped         = false;
+            $scoped         = empty($require_group);
 
             if (empty($require_group)) {
-                writesyslog(
-                    'WeKrwiITLDAPAuthPass: require_group is not configured — refusing LDAP '
-                        . 'shortcut for ' . $login_safe . ' (set WeKrwiITLDAPAuthPass.require_group '
-                        . 'to an AD security group DN to enable operator sign-in)',
-                    LOG_ERR
-                );
+                // Nothing further to check — bind success alone authorizes.
             } elseif (empty($base_dn)) {
                 writesyslog('WeKrwiITLDAPAuthPass: base_dn is not configured, cannot verify require_group', LOG_ERR);
             } else {
-                $filter = '(&(sAMAccountName=' . ldap_escape($sam, '', LDAP_ESCAPE_FILTER) . ')'
-                    . '(memberOf:1.2.840.113556.1.4.1941:=' . ldap_escape($require_group, '', LDAP_ESCAPE_DN) . '))';
-                $search = @ldap_search($conn, $base_dn, $filter, ['dn'], 0, 1, 3);
+                // Match on whatever identity the bind actually authenticated, not
+                // just the bare sAMAccountName: AD resolves a UPN bind against the
+                // account's explicit userPrincipalName FIRST, falling back to
+                // sAMAccountName@default-domain only if no explicit UPN matches.
+                // In a forest with multiple UPN suffixes / alternate UPNs, some
+                // *other* account's sAMAccountName can coincide with the login's
+                // UPN-prefix while that other account's own explicit UPN differs —
+                // checking group membership only by sAMAccountName then risks
+                // authorizing an identity that never bound. Requiring the match to
+                // also carry the exact bind_dn as its userPrincipalName (or, for a
+                // bare login with no bind_dn_suffix, its sAMAccountName) and
+                // demanding exactly one hit closes that gap; ambiguity fails closed.
+                $filter = '(&(|(userPrincipalName=' . ldap_escape($bind_dn, '', LDAP_ESCAPE_FILTER) . ')'
+                    . '(sAMAccountName=' . ldap_escape($sam, '', LDAP_ESCAPE_FILTER) . '))'
+                    . '(memberOf:1.2.840.113556.1.4.1941:=' . ldap_escape($require_group, '', LDAP_ESCAPE_FILTER) . '))';
+                $search = @ldap_search($conn, $base_dn, $filter, ['dn', 'userprincipalname', 'samaccountname'], 0, 2, 3);
                 if ($search) {
                     $entries = @ldap_get_entries($conn, $search);
-                    $scoped  = $entries && $entries['count'] > 0;
+                    $scoped  = $entries && $entries['count'] === 1
+                        && strcasecmp($entries[0]['userprincipalname'][0] ?? '', $bind_dn) === 0;
                 }
                 if (!$scoped) {
                     writesyslog(
